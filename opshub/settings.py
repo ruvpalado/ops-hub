@@ -153,6 +153,12 @@ SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE = "Lax"
 X_FRAME_OPTIONS = "DENY"
 
+# Google OAuth. Empty means "sign-in is not configured"; the start view says so
+# out loud rather than redirecting to a half-formed URL.
+GOOGLE_CLIENT_ID = env_str("GOOGLE_CLIENT_ID", "") or ""
+GOOGLE_CLIENT_SECRET = env_str("GOOGLE_CLIENT_SECRET", "") or ""
+GOOGLE_REDIRECT_URI = env_str("GOOGLE_REDIRECT_URI", "") or ""
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
