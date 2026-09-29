@@ -24,7 +24,14 @@ class AppUser(models.Model):
     display_name = models.CharField(max_length=120)
     role = models.CharField(max_length=16, choices=Role.choices, default=Role.MEMBER)
     timezone = models.CharField(max_length=64, default="UTC", blank=True)
+    # Google tokens, encrypted at rest with accounts.crypto (AES-256-GCM). The
+    # ciphertext lives in the column; nothing in the app ever holds a token in
+    # a plaintext column, and refresh_token_obtained_at is the clock the 7-day
+    # expiry warning is measured from.
+    refresh_token = models.BinaryField(null=True, blank=True)
+    access_token = models.BinaryField(null=True, blank=True)
     refresh_token_obtained_at = models.DateTimeField(null=True, blank=True)
+    token_expires_at = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -13,7 +13,9 @@ from django.shortcuts import redirect
 from django.views.decorators.http import require_GET
 
 from accounts import oauth
+from accounts import crypto
 from accounts.services import google_oauth, signin
+from accounts.services import tokens as token_store
 from audit import writer as audit
 
 logger = logging.getLogger(__name__)
@@ -85,14 +87,14 @@ def google_callback(request):
         return _plain("Sign-in failed: no authorization code.", 400)
 
     try:
-        tokens = google_oauth.exchange_code(
+        token_payload = google_oauth.exchange_code(
             code=code,
             code_verifier=verifier,
             client_id=settings.GOOGLE_CLIENT_ID,
             client_secret=settings.GOOGLE_CLIENT_SECRET,
             redirect_uri=settings.GOOGLE_REDIRECT_URI,
         )
-        identity = google_oauth.fetch_identity(tokens["access_token"])
+        identity = google_oauth.fetch_identity(token_payload["access_token"])
     except google_oauth.OAuthError as exc:
         logger.warning("oauth leg failed", extra={"oauth_error_code": exc.code or "unknown"})
         audit.record(actor=None, action="auth.signin_denied", target_type="google", metadata={"reason": "upstream"})
@@ -107,6 +109,21 @@ def google_callback(request):
         audit.record(actor=None, action="auth.signin_denied", target_type="google", metadata={"reason": "not_permitted"})
         return _plain("This Google account is not permitted to sign in.", 403)
 
+    try:
+        stored = token_store.store_tokens(user, token_payload)
+    except crypto.TokenKeyError:
+        # a key problem is ours, not the user's: refuse loudly, do not sign in
+        # half-configured
+        logger.error("token storage refused: unusable OPSHUB_TOKEN_KEY")
+        return _plain("Sign-in failed: token storage is misconfigured on this server.", 500)
+
+    audit.record(
+        actor=user,
+        action="auth.tokens_stored",
+        target_type="user",
+        target_id=user.pk,
+        metadata={"refresh_token_rotated": stored["refresh_token"]},
+    )
     request.session.cycle_key()  # no session fixation across a privilege change
     request.session[SESSION_USER_KEY] = user.pk
     audit.record(actor=user, action="auth.signin", target_type="user", target_id=user.pk)
