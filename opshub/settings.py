@@ -156,8 +156,17 @@ X_FRAME_OPTIONS = "DENY"
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "filters": {
+        "redaction": {"()": "core.redaction.RedactionFilter"},
+    },
     "formatters": {"plain": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"}},
-    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "plain"}},
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "plain",
+            "filters": ["redaction"],
+        }
+    },
     "root": {"handlers": ["console"], "level": env_str("OPSHUB_LOG_LEVEL", "INFO")},
 }
 
