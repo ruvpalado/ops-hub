@@ -35,3 +35,6 @@ jobs:
           ! (grep -rEn "objects\.(get|filter|all|create|update|delete|first|last|exists)\("
           --include=views.py . | grep -v "services.py")
       - run: uv run pytest -q
+      - name: no ORM queries in views (second invariant, step 2)
+        run: >
+          ! (grep -rEn "objects\.(get|filter|all|create|update|delete|first|last|exists)\(" . --include=views.py)
