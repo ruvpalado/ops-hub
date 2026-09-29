@@ -1,0 +1,37 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: opshub
+          POSTGRES_USER: opshub
+          POSTGRES_PASSWORD: opshub
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready" --health-interval 5s --health-timeout 5s
+          --health-retries 10
+    env:
+      OPSHUB_ENV: test
+      DATABASE_URL: postgresql://opshub:opshub@localhost:5432/opshub
+      OPSHUB_SECRET_KEY: ci-only-signing-key
+      OPSHUB_TOKEN_KEY: placeholder-gated-by-skip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-groups
+      - run: uv run python manage.py migrate
+      # Invariant 1 — the only module allowed to import cryptography
+      - name: crypto choke point
+        run: >
+          ! (grep -rEn "^(from cryptography|import cryptography)" --include=*.py . |
+          grep -v "accounts/crypto.py")
+      # Invariant 2 — no ORM queries in views
+      - name: views hold no queries
+        run: >
+          ! (grep -rEn "objects\.(get|filter|all|create|update|delete|first|last|exists)\("
+          --include=views.py . | grep -v "services.py")
+      - run: uv run pytest -q

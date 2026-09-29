@@ -1,0 +1,17 @@
+# Local development database. Real Postgres, nothing subtle.
+# (This environment runs Ops Hub against an embedded Postgres cluster instead —
+#  see scripts/dev_db.py when Docker is unavailable.)
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: opshub
+      POSTGRES_USER: opshub
+      POSTGRES_PASSWORD: opshub-dev-only
+    ports:
+      - "5432:5432"
+    volumes:
+      - opshub_pgdata:/var/lib/postgresql/data
+
+volumes:
+  opshub_pgdata:

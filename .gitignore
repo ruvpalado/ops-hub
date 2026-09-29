@@ -1,0 +1,18 @@
+# secrets — .env is names-only in the repo, real values never committed
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# django
+staticfiles/
+*.log
+
+# local postgres cluster (dev only, never committed)
+pgdata/

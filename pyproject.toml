@@ -1,0 +1,32 @@
+[project]
+name = "ops-hub"
+version = "0.1.0"
+description = "Internal ops hub: shared task board, calendar availability, inbox."
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "django>=5.2,<6.0",
+    "psycopg[binary]>=3.2",
+    "gunicorn>=23.0",
+    "cryptography>=43.0",
+    "google-api-python-client>=2.140",
+    "google-auth>=2.35",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-django>=4.9",
+    "pytest-randomly>=3.15",
+    "pgserver>=0.1.4",
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "opshub.settings"
+python_files = ["test_*.py"]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
