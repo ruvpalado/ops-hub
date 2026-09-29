@@ -55,7 +55,11 @@ from core.models import Source
 
 
 def _user(db):
-    return AppUser.objects.create(email="tok@example.com", display_name="Tok", google_sub="sub-t")
+    """A user with both source slots, exactly as sign-in would leave them."""
+    user = AppUser.objects.create(email="tok@example.com", display_name="Tok", google_sub="sub-t")
+    Source.objects.get_or_create(user=user, kind="gmail")
+    Source.objects.get_or_create(user=user, kind="calendar")
+    return user
 
 
 def test_store_tokens_writes_encrypted_columns_and_expiry(db):
@@ -140,3 +144,171 @@ def test_store_tokens_reactivates_sources_but_not_disconnected_ones(db):
     assert gmail.disconnected_at is None
     assert calendar.status == Source.Status.DISCONNECTED
     assert calendar.disconnected_at is not None
+
+
+# ------------------------------------------------------------- step 12: refresh
+
+from unittest import mock
+
+from accounts.services import refresh as refresh_service
+from accounts.services.google_oauth import OAuthError
+
+
+def _ready_user(db, *, expires_in=30):
+    """A user whose access token is inside the 60s margin, so a refresh is due."""
+    user = _user(db)
+    now = timezone.now()
+    token_store.store_tokens(
+        user, {"access_token": "ya29.old", "refresh_token": "1//keep-me", "expires_in": expires_in}, now=now
+    )
+    user.refresh_from_db()
+    Source.objects.filter(user=user).update(
+        cursor="cursor-abc", last_synced_at=now - timedelta(hours=1)
+    )
+    return user
+
+
+def _slept():
+    recorded = []
+    return recorded, recorded.append
+
+
+def test_refresh_skips_the_call_when_the_token_is_comfortably_valid(db):
+    user = _user(db)
+    now = timezone.now()
+    token_store.store_tokens(user, {"access_token": "ya29.fresh", "refresh_token": "1//r"}, now=now)
+    user.refresh_from_db()
+    before = bytes(user.access_token)
+
+    with mock.patch("accounts.services.google_oauth._http") as http:
+        outcome = refresh_service.refresh_if_needed(user, now=now)
+
+    assert outcome == refresh_service.OUTCOME_SKIPPED
+    assert http.call_count == 0
+    user.refresh_from_db()
+    assert bytes(user.access_token) == before
+
+
+def test_refresh_swaps_the_access_token_and_keeps_the_refresh_token(db, settings):
+    settings.GOOGLE_CLIENT_ID = "client-id"
+    settings.GOOGLE_CLIENT_SECRET = "secret"
+    user = _ready_user(db)
+    user.refresh_from_db()
+    stored_refresh_blob, stored_obtained = bytes(user.refresh_token), user.refresh_token_obtained_at
+    now = timezone.now()
+    slept, _ = _slept()
+
+    with mock.patch(
+        "accounts.services.google_oauth._http", return_value={"access_token": "ya29.new", "expires_in": 3600}
+    ) as http:
+        outcome = refresh_service.refresh_if_needed(user, now=now, sleep=slept.append)
+
+    assert outcome == refresh_service.OUTCOME_REFRESHED
+    assert slept == [], "a successful refresh must not sleep"
+    assert http.call_args.kwargs["data"]["grant_type"] == "refresh_token"
+    assert http.call_args.kwargs["data"]["refresh_token"] == "1//keep-me"
+    user.refresh_from_db()
+    assert token_store.read_access_token(user) == "ya29.new"
+    assert user.token_expires_at == now + timedelta(seconds=3600)
+    assert bytes(user.refresh_token) == stored_refresh_blob
+    assert user.refresh_token_obtained_at == stored_obtained
+
+
+def test_refresh_invalid_grant_needs_reauth_and_leaves_data_byte_identical(db, settings):
+    settings.GOOGLE_CLIENT_ID = "client-id"
+    settings.GOOGLE_CLIENT_SECRET = "secret"
+    user = _ready_user(db)
+    now = timezone.now()
+
+    def snapshot():
+        from accounts.models import AppUser
+
+        row = AppUser.objects.get(pk=user.pk)
+        return {
+            "email": row.email,
+            "display_name": row.display_name,
+            "google_sub": row.google_sub,
+            "role": row.role,
+            "timezone": row.timezone,
+            "refresh_token": bytes(row.refresh_token),
+            "access_token": bytes(row.access_token),
+            "refresh_token_obtained_at": row.refresh_token_obtained_at,
+            "sources": sorted(
+                (s.kind, s.cursor, s.last_synced_at, s.created_at) for s in row.sources.all()
+            ),
+        }
+
+    before = snapshot()
+    slept, _ = _slept()
+
+    with mock.patch("accounts.services.google_oauth._http", side_effect=OAuthError("bad", code="invalid_grant")):
+        outcome = refresh_service.refresh_if_needed(user, now=now, sleep=slept.append)
+
+    assert outcome == refresh_service.OUTCOME_NEEDS_REAUTH
+    assert slept == [], "invalid_grant is terminal; retrying would be wrong"
+    assert snapshot() == before, "no user or sync data may change on invalid_grant"
+
+    for source in user.sources.all():
+        assert source.status == Source.Status.NEEDS_REAUTH
+        assert source.last_error_code == "invalid_grant"
+        assert source.disconnected_at == now
+        assert source.next_attempt_at is None, "needs_reauth rows must never be auto-retried"
+
+
+def test_refresh_defers_with_backoff_on_transient_failure(db, settings):
+    settings.GOOGLE_CLIENT_ID = "client-id"
+    settings.GOOGLE_CLIENT_SECRET = "secret"
+    user = _ready_user(db)
+    now = timezone.now()
+    slept, _ = _slept()
+
+    with mock.patch(
+        "accounts.services.google_oauth._http", side_effect=OAuthError("boom", code="http_503")
+    ) as http:
+        outcome = refresh_service.refresh_if_needed(user, now=now, sleep=slept.append)
+
+    assert outcome == refresh_service.OUTCOME_DEFERRED
+    assert slept == list(refresh_service.RETRY_DELAYS_SECONDS) == [2, 8]
+    assert http.call_count == 3, "one attempt plus two retries"
+    assert user.sources.count() == 2
+    for source in user.sources.all():
+        assert source.status == Source.Status.ACTIVE, "a flaky network must not disconnect anyone"
+        assert source.last_error_code == "upstream_5xx"
+        assert source.next_attempt_at == now + timedelta(minutes=refresh_service.DEFER_MINUTES)
+        assert source.disconnected_at is None
+
+
+def test_refresh_without_a_stored_refresh_token_needs_reauth_without_a_call(db):
+    user = _user(db)
+    now = timezone.now()
+
+    with mock.patch("accounts.services.google_oauth._http") as http:
+        outcome = refresh_service.refresh_if_needed(user, now=now)
+
+    assert outcome == refresh_service.OUTCOME_NEEDS_REAUTH
+    assert http.call_count == 0, "there is nothing to present to Google"
+    assert user.sources.count() == 2
+    for source in user.sources.all():
+        assert source.status == Source.Status.NEEDS_REAUTH
+        assert source.last_error_code == "no_token"
+    assert source.next_attempt_at is None
+
+
+def test_refresh_network_failure_defers_with_the_network_error_code(db, settings):
+    settings.GOOGLE_CLIENT_ID = "client-id"
+    settings.GOOGLE_CLIENT_SECRET = "secret"
+    user = _ready_user(db)
+    now = timezone.now()
+    slept, _ = _slept()
+
+    with mock.patch("accounts.services.google_oauth._http", side_effect=OAuthError("unreachable", code="network")):
+        outcome = refresh_service.refresh_if_needed(user, now=now, sleep=slept.append)
+
+    assert outcome == refresh_service.OUTCOME_DEFERRED
+    assert slept == [2, 8]
+    assert user.sources.count() == 2
+    for source in user.sources.all():
+        assert source.status == Source.Status.ACTIVE
+        assert source.last_error_code == "network"
+        assert source.next_attempt_at == now + timedelta(minutes=15)
+        assert source.disconnected_at is None

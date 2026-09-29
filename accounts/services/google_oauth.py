@@ -57,7 +57,8 @@ def _http(method: str, url: str, *, data: dict | None = None, access_token: str 
             detail = json.loads(exc.read()).get("error", "")
         except Exception:  # noqa: BLE001 - a broken error body must not mask the HTTP status
             detail = ""
-        raise OAuthError(f"google returned HTTP {exc.code}", code=detail or None) from exc
+        # http_5xx stays distinguishable from invalid_grant: refresh retries one, not the other
+        raise OAuthError(f"google returned HTTP {exc.code}", code=detail or f"http_{exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise OAuthError("google unreachable", code="network") from exc
 
