@@ -17,9 +17,29 @@ import re
 
 # value characters that actually occur in tokens/codes: base64url, hex, dots,
 # slashes, plus, minus, underscore, tilde
+# The vocabulary of "this is a secret" — shared with the audit writer, which
+# drops these keys from metadata before persisting.
+SECRET_KEY_NAMES = frozenset(
+    {
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "client_secret",
+        "password",
+        "token_key",
+        "code",
+        "state",
+        "authorization",
+        "token",
+        "secret",
+        "credentials",
+        "set-cookie",
+    }
+)
+
 _TOKEN = r"[A-Za-z0-9._~+/=-]{6,}"
 _QUOTE = r"[\"']?"
-_KEYS = r"access_token|refresh_token|id_token|client_secret|password|token_key|code|state"
+_KEYS = "|".join(sorted(SECRET_KEY_NAMES))
 
 # key/value form: access_token=..., "access_token":"...", secret: "..."
 _PATTERN_KV = re.compile(
