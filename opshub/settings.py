@@ -158,6 +158,9 @@ X_FRAME_OPTIONS = "DENY"
 GOOGLE_CLIENT_ID = env_str("GOOGLE_CLIENT_ID", "") or ""
 GOOGLE_CLIENT_SECRET = env_str("GOOGLE_CLIENT_SECRET", "") or ""
 GOOGLE_REDIRECT_URI = env_str("GOOGLE_REDIRECT_URI", "") or ""
+# Workspace domains allowed to claim an account unaided. Empty means nobody:
+# a missing allowlist must not read as "open to the internet".
+ALLOWED_EMAIL_DOMAINS = [d.strip() for d in env_str("ALLOWED_EMAIL_DOMAINS", "").split(",") if d.strip()]
 
 LOGGING = {
     "version": 1,

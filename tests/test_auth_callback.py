@@ -24,6 +24,8 @@ def configured(settings):
     settings.GOOGLE_CLIENT_ID = "client-id.apps.googleusercontent.com"
     settings.GOOGLE_CLIENT_SECRET = "secret"
     settings.GOOGLE_REDIRECT_URI = CALLBACK
+    # the sign-in gate is fail-closed, so a successful callback must name a domain
+    settings.ALLOWED_EMAIL_DOMAINS = ["example.com"]
     return settings
 
 
