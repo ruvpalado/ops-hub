@@ -104,6 +104,7 @@ INSTALLED_APPS = [
     "core",
     "accounts",
     "audit",
+    "calendar_app",
     "django.contrib.sessions",
     "django.contrib.auth",
     "django.contrib.contenttypes",

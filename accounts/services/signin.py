@@ -35,6 +35,18 @@ def domain_allowed(email: str, domains: list[str]) -> bool:
     return any(domain == d.lower() for d in domains)
 
 
+def session_user(user_id) -> AppUser | None:
+    """The signed-in AppUser, or None if there is no such row any more.
+
+    The session stores a bare pk, so something has to turn it back into a row.
+    That lookup belongs here rather than in a view, which holds no ORM queries.
+    A None is a real answer: the account was deleted while the cookie lived.
+    """
+    if not user_id:
+        return None
+    return AppUser.objects.filter(pk=user_id).first()
+
+
 def ensure_sources(user: AppUser) -> list[Source]:
     """Every account has both source slots from first sign-in onwards.
 

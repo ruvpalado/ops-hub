@@ -8,4 +8,5 @@ urlpatterns = [
     path("", views.home, name="home"),
     path("auth/google", auth_views.google_start, name="auth_google_start"),
     path("auth/callback", auth_views.google_callback, name="auth_google_callback"),
+    path("reconnect", auth_views.reconnect, name="auth_reconnect"),
 ]

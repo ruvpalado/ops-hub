@@ -21,6 +21,10 @@ from audit import writer as audit
 logger = logging.getLogger(__name__)
 
 SESSION_USER_KEY = "app_user_id"
+# Marks a callback as the second leg of /reconnect rather than a fresh sign-in.
+# It lives in the session for the same reason the state and verifier do: it is
+# part of one round trip and is consumed by the leg that closes it.
+RECONNECT_SESSION_KEY = "reconnect_intent"
 
 
 def _oauth_config() -> tuple[str, str]:
@@ -51,6 +55,22 @@ def google_start(request):
     )
 
 
+@require_GET
+def reconnect(request):
+    """Start the consent round trip that replaces a dead Testing-mode grant.
+
+    This is the "Reconnect Google" button's whole job, and it is the start leg
+    only. Google matches redirect_uri exactly and the client has one registered
+    address, so the trip comes back to the ordinary callback with the intent
+    marked in the session. A dead 7-day grant is a sign-in-shaped problem:
+    same state machine, same exchange, no second copy of it to keep correct.
+    """
+    if not request.session.get(SESSION_USER_KEY):
+        return redirect("/auth/google", permanent=False)
+    request.session[RECONNECT_SESSION_KEY] = True
+    return google_start(request)
+
+
 def _plain(message: str, status: int = 400) -> HttpResponse:
     return HttpResponse(message, status=status, content_type="text/plain; charset=utf-8")
 
@@ -67,6 +87,7 @@ def google_callback(request):
 
     state = request.session.pop(oauth.STATE_SESSION_KEY, None)
     verifier = request.session.pop(oauth.VERIFIER_SESSION_KEY, None)
+    reconnecting = request.session.pop(RECONNECT_SESSION_KEY, False)
 
     if request.GET.get("error"):
         # Google refused or the user declined; not an exception, a normal outcome
@@ -104,10 +125,22 @@ def google_callback(request):
         audit.record(actor=None, action="auth.signin_denied", target_type="google", metadata={"reason": "unverified_email"})
         return _plain("Sign-in failed: your Google email is not verified.", 403)
 
-    user = signin.resolve_identity(identity)
+    user = signin.session_user(request.session.get(SESSION_USER_KEY)) if reconnecting else None
+    if reconnecting and user is None:
+        # the session claims a user the database does not have: a deleted account
+        # with a live cookie. There is nobody to reconnect for.
+        audit.record(actor=None, action="auth.signin_denied", target_type="user", metadata={"reason": "no_session"})
+        return _plain("Reconnect failed: sign in again first.", 403)
+
     if user is None:
-        audit.record(actor=None, action="auth.signin_denied", target_type="google", metadata={"reason": "not_permitted"})
-        return _plain("This Google account is not permitted to sign in.", 403)
+        user = signin.resolve_identity(identity)
+        if user is None:
+            audit.record(actor=None, action="auth.signin_denied", target_type="google", metadata={"reason": "not_permitted"})
+            return _plain("This Google account is not permitted to sign in.", 403)
+    elif identity.sub != user.google_sub:
+        # reconnecting must never swap which account the session points at
+        audit.record(actor=user, action="auth.signin_denied", target_type="google", metadata={"reason": "identity_mismatch"})
+        return _plain("Reconnect failed: that Google account is not the signed-in one.", 403)
 
     try:
         stored = token_store.store_tokens(user, token_payload)
@@ -124,6 +157,14 @@ def google_callback(request):
         target_id=user.pk,
         metadata={"refresh_token_rotated": stored["refresh_token"]},
     )
+    if reconnecting:
+        # store_tokens already flipped the stopped sources back to active and
+        # restamped refresh_token_obtained_at, because Google only returns a
+        # refresh token after a fresh consent. The session keeps its key: no
+        # privilege changed, so there is nothing to cycle away from.
+        audit.record(actor=user, action="auth.reconnect", target_type="user", target_id=user.pk)
+        return redirect("/", permanent=False)
+
     request.session.cycle_key()  # no session fixation across a privilege change
     request.session[SESSION_USER_KEY] = user.pk
     audit.record(actor=user, action="auth.signin", target_type="user", target_id=user.pk)

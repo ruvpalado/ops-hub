@@ -1,0 +1,8 @@
+{% if banner %}
+<div class="reconnect-banner reconnect-banner--{{ banner.kind }}" role="status">
+  <p class="reconnect-banner__message">{{ banner.message }}</p>
+  {% if banner.show_action %}
+  <a class="reconnect-banner__action" href="/reconnect">Reconnect Google</a>
+  {% endif %}
+</div>
+{% endif %}
