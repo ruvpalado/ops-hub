@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Team — Ops Hub{% endblock %}
+
+{% comment %}
+§7 row 3: the directory is readable by every member, and it is exactly three
+fields. The token columns are not hidden by this template — the service's query
+never selects them, so there is nothing here to leak even if this page grows.
+An invited row with no google_sub is an invitation rather than a user and is
+not on this list, which is why somebody awaiting a first sign-in is absent
+until they arrive.
+{% endcomment %}
+
+{% block content %}
+<h1>Team</h1>
+
+<table>
+  <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Email</th>
+      <th scope="col">Role</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for person in people %}
+      <tr data-user-id="{{ person.pk }}">
+        <td>{{ person.display_name }}</td>
+        <td>{{ person.email }}</td>
+        <td>{{ person.role }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="3">Nobody here yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p><a href="{% url 'task_board' %}">Back to the board</a></p>
+{% endblock %}

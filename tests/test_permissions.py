@@ -13,9 +13,10 @@ Two halves, deliberately in one file because they are the same subject:
    route gets 403 and not 302 — a 302 would tell an authenticated caller that
    the route exists, which is a free map of the privileged surface.
 
-The probe views and urlpatterns below exist only for these tests. The
-decorators are still read-only in production: no shipped view wears one yet, so
-the proof is a test-only URLconf rather than a route invented to be measured.
+The probe views and urlpatterns below exist only for these tests. They keep
+proving the decorator on its own, away from any route that depends on it, so a
+failure here is the decorator rather than the task board. The shipped board
+wears the same decorator, and tests/test_task_board.py proves it end to end.
 
 3. Model B, the task write predicate, proved against the matrix it implements.
    The one test to read first is
@@ -66,11 +67,11 @@ class MatrixRow:
 MATRIX: list[MatrixRow] = [
     MatrixRow("1", "app_user", "Sign in via Google", True, True, "public /auth/google", None),
     MatrixRow("2", "app_user", "Read own profile, own tokens", True, True, "WHERE id = actor.id", "24"),
-    MatrixRow("3", "app_user", "Read team directory", True, True, "full list, tokens excluded", "16"),
+    MatrixRow("3", "app_user", "Read team directory", True, True, "full list, tokens excluded", None),
     MatrixRow("4", "app_user", "Change another user's role", True, False, "require_role -> 403", "24"),
     MatrixRow("5", "app_user", "Read audit log", True, False, "require_role -> 403", "24"),
-    MatrixRow("6", "task", "List / read", True, True, "no owner filter", "16"),
-    MatrixRow("7", "task", "Create", True, True, "created_by_id forced server-side", "16"),
+    MatrixRow("6", "task", "List / read", True, True, "no owner filter", None),
+    MatrixRow("7", "task", "Create", True, True, "created_by_id forced server-side", None),
     MatrixRow("8", "task", "Update", True, False, "Model B, in the UPDATE WHERE", None),
     MatrixRow("8a", "task", "Reassign to a different user", True, False, "Model B, pre-edit assignee", None),
     MatrixRow("9", "task", "Delete", True, False, "require_role -> 403", None),
@@ -96,9 +97,18 @@ MATRIX: list[MatrixRow] = [
 # A row lands here only when that proof exists and passes.
 ALREADY_ENFORCED = {
     "1": "tests/test_signin_gate.py::test_claim_refusal_is_visible_to_the_view_and_the_audit_trail",
-    "8": "tests/test_permissions.py::test_task_edit_of_a_colleagues_task_is_refused_and_changes_nothing",
+    "3": "tests/test_task_board.py::test_the_team_directory_lists_people_and_never_a_token_column",
+    "6": "tests/test_task_board.py::test_a_member_reading_a_colleagues_task_gets_the_page_and_no_edit_controls",
+    "7": "tests/test_task_board.py::test_creating_a_task_records_the_actor_as_creator_however_the_form_is_sent",
+    "8": (
+        # The predicate in the UPDATE WHERE, then the route that refuses at the
+        # door, then the save that changes nothing. Three proofs, one row.
+        "tests/test_permissions.py::test_task_edit_of_a_colleagues_task_is_refused_and_changes_nothing",
+        "tests/test_task_board.py::test_row_8_a_member_asking_for_a_colleagues_edit_form_is_refused_and_learns_nothing",
+        "tests/test_task_board.py::test_row_8_a_member_saving_a_colleagues_task_is_refused_and_the_row_is_unchanged",
+    ),
     "8a": "tests/test_permissions.py::test_task_edit_of_an_unassigned_task_to_a_third_party_is_refused",
-    "9": "tests/test_permissions.py::test_task_edit_delete_by_a_member_is_refused",
+    "9": "tests/test_task_board.py::test_deleting_a_task_is_admins_work",
     "10": "tests/test_permissions.py::test_task_edit_bulk_delete_by_a_member_removes_nothing",
     "24": "tests/test_audit.py::test_audit_writer_drops_secret_metadata",
     "25": "tests/test_audit.py::test_audit_log_rejects_update_and_delete",

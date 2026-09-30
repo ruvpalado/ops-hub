@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}#{{ detail.task.pk }} {{ detail.task.title }} — Ops Hub{% endblock %}
+
+{% comment %}
+Read is shared and write is scoped (§7 rows 6 and 8), so this page is the same
+for everybody and the controls are not: `detail.editable` is row 8 answered by
+the same SQL predicate that guards the write, and `detail.deletable` is row 9.
+A member reading a colleague's task sees the page with the controls absent,
+which is what the spec asks for — absent, not disabled and teasing.
+{% endcomment %}
+
+{% block content %}
+<article data-task-id="{{ detail.task.pk }}">
+  <h1>#{{ detail.task.pk }} {{ detail.task.title }}</h1>
+
+  <dl>
+    <dt>Status</dt><dd>{{ detail.task.get_status_display }}</dd>
+    <dt>Priority</dt><dd>{{ detail.task.get_priority_display }}</dd>
+    <dt>Assignee</dt>
+    <dd>{% if detail.task.assignee %}{{ detail.task.assignee.display_name }} ({{ detail.task.assignee.email }}){% else %}unassigned{% endif %}</dd>
+    <dt>Due</dt><dd>{{ detail.task.due_at|date:"Y-m-d H:i"|default:"—" }} UTC</dd>
+    <dt>Created by</dt><dd>{{ detail.task.created_by.display_name }}</dd>
+    <dt>Created</dt><dd>{{ detail.task.created_at|date:"Y-m-d H:i" }} UTC</dd>
+    <dt>Last change</dt><dd>{{ detail.task.updated_at|date:"Y-m-d H:i" }} UTC</dd>
+    {% if detail.task.completed_at %}
+      <dt>Completed</dt><dd>{{ detail.task.completed_at|date:"Y-m-d H:i" }} UTC</dd>
+    {% endif %}
+    <dt>Description</dt>
+    <dd>{% if detail.task.description %}{{ detail.task.description|linebreaks }}{% else %}No description.{% endif %}</dd>
+  </dl>
+
+  <p>
+    <a href="{% url 'task_board' %}">Back to the board</a>
+    {% if detail.editable %}
+      · <a href="{% url 'task_edit' detail.task.pk %}">Edit</a>
+    {% endif %}
+  </p>
+
+  {% if not detail.task.assignee_id %}
+    <form method="post" action="{% url 'task_claim' detail.task.pk %}">
+      {% csrf_token %}
+      <button type="submit">Claim this task</button>
+    </form>
+  {% endif %}
+
+  {% if detail.deletable %}
+    <form method="post" action="{% url 'task_delete' detail.task.pk %}">
+      {% csrf_token %}
+      <button type="submit">Delete</button>
+    </form>
+  {% endif %}
+</article>
+{% endblock %}

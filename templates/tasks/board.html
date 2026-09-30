@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Task board — Ops Hub{% endblock %}
+
+{% comment %}
+One page, three questions the person asking it actually has: what is mine,
+what is the team carrying, and what is about to be late. The list is capped at
+BOARD_PAGE_SIZE and the column at DUE_SOON_LIMIT, in the service, because a cap
+that lives in a template is a cap that stops being applied the day somebody
+reorders the markup.
+
+`{% querystring %}` carries the scope and the status filter through the
+pagination links and re-encodes them, so a page link cannot smuggle a raw
+query string into the address bar.
+{% endcomment %}
+
+{% block content %}
+<h1>Task board</h1>
+
+<nav>
+  <a href="{% querystring scope='mine' page=1 %}">My tasks</a>
+  <a href="{% querystring scope='team' page=1 %}">Team board</a>
+  <a href="{% querystring page=1 status='' %}">All statuses</a>
+</nav>
+
+<form method="get">
+  <input type="hidden" name="scope" value="{{ scope }}">
+  <label for="id_status">Status</label>
+  <select id="id_status" name="status">
+    <option value=""{% if not status %} selected{% endif %}>any</option>
+    {% for value, label in statuses %}
+      <option value="{{ value }}"{% if status == value %} selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+</form>
+
+<table>
+  <caption>
+    {% if scope == 'team' %}Every task on the board{% else %}Tasks assigned to me{% endif %}
+    — page {{ page.number }} of {{ page.paginator.num_pages }}, {{ page.paginator.count }} total
+  </caption>
+  <thead>
+    <tr>
+      <th scope="col">Task</th>
+      <th scope="col">Status</th>
+      <th scope="col">Priority</th>
+      <th scope="col">Assignee</th>
+      <th scope="col">Due (UTC)</th>
+      <th scope="col">Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for task in page %}
+      <tr data-task-id="{{ task.pk }}">
+        <td><a href="{% url 'task_detail' task.pk %}">#{{ task.pk }} {{ task.title }}</a></td>
+        <td>{{ task.get_status_display }}</td>
+        <td>{{ task.get_priority_display }}</td>
+        <td>{% if task.assignee %}{{ task.assignee.display_name }}{% else %}unassigned{% endif %}</td>
+        <td>{{ task.due_at|date:"Y-m-d H:i"|default:"—" }}</td>
+        <td>
+          {% comment %}
+          Claim is offered on unclaimed rows and nowhere else. The button is a
+          row fact, not a permission answer: any member may claim an unclaimed
+          task, so offering it here cannot over-offer, and the POST is decided
+          by the same Model B predicate as every other write.
+          {% endcomment %}
+          {% if not task.assignee_id %}
+            <form method="post" action="{% url 'task_claim' task.pk %}">
+              {% csrf_token %}
+              <button type="submit">Claim</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="6">Nothing here yet. <a href="{% url 'task_create' %}">File the first task</a>.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<nav aria-label="Pagination">
+  {% if page.has_previous %}<a href="{% querystring page=page.previous_page_number %}">Previous</a>{% endif %}
+  <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+  {% if page.has_next %}<a href="{% querystring page=page.next_page_number %}">Next</a>{% endif %}
+</nav>
+
+<section>
+  <h2>Due soon</h2>
+  <ul>
+    {% for task in due_soon %}
+      <li>
+        <a href="{% url 'task_detail' task.pk %}">#{{ task.pk }} {{ task.title }}</a>
+        — {{ task.get_status_display }}, due {{ task.due_at|date:"Y-m-d H:i" }} UTC
+      </li>
+    {% empty %}
+      <li>Nothing with a due date.</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

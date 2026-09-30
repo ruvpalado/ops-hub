@@ -374,13 +374,15 @@ Views contain no ORM queries. The list is paginated at 50; there is no unbounded
 
 **Proof:**
 ```bash
-uv run pytest tests/test_permissions.py -k "board" -q && \
+uv run pytest tests/test_permissions.py tests/test_task_board.py \
+  -k "board or task_edit or task_detail or matrix or row_8" -q && \
   uv run python manage.py shell -c "
 from tasks.services import board_page
-print(board_page(owner_id=1, page=9999).num_pages)"
+page = board_page(owner_id=1, page=9999)
+print('requested 9999, served page', page.number, 'of', page.paginator.num_pages)"
 ```
 
-**Expected:** a line containing `3 passed`, then an integer ≥ 1 (an out-of-range page clamps rather than raising).
+**Expected:** `64 passed, 12 deselected`, then `requested 9999, served page 1 of 1` — the page clamps rather than raising. The selector names both files because the board proofs live in `tests/test_task_board.py`; `-k "board"` against `tests/test_permissions.py` alone selects nothing, which is a green line that proves nothing. `num_pages` is on `page.paginator`, not on the `Page`.
 
 ---
 
@@ -567,13 +569,17 @@ uv run grep -q 'Index Scan' /tmp/ops_plan_explain.txt && echo "INDEX_USED"
 
 **Proof:**
 ```bash
-uv run pytest -q && \
-  uv run grep -rn "^from cryptography\|^import cryptography" --include=*.py . | grep -v "accounts/crypto.py" && echo "LEAK" || echo "CRYPTO_CHOKEPOINT_OK"
+uv run pytest -q
+uv run grep -rEn "^(from cryptography|import cryptography)" --include=*.py \
+  --exclude-dir=.venv --exclude-dir=.git . | grep -v "accounts/crypto.py" && echo "LEAK" || echo "CRYPTO_CHOKEPOINT_OK"
 uv run grep -rn "\.objects\." --include=*.py ./templates 2>/dev/null && echo "LEAK" || echo "TEMPLATES_CLEAN"
-uv run grep -rn "objects\." --include=views.py . | grep -v services.py && echo "LEAK" || echo "VIEWS_HOLD_NO_QUERIES"
+uv run grep -rEn "objects\.(get|filter|all|create|update|delete|first|last|exists)\(" \
+  --include=views.py --exclude-dir=.venv --exclude-dir=.git . && echo "LEAK" || echo "VIEWS_HOLD_NO_QUERIES"
 ```
 
 **Expected:** all tests passing, then `CRYPTO_CHOKEPOINT_OK`, `TEMPLATES_CLEAN`, `VIEWS_HOLD_NO_QUERIES`, and a `README.md` whose setup section a stranger can follow without asking a question.
+
+The two source greps are copies of the invariants in `.github/workflows/ci.yml`, regex for regex, and are kept that way on purpose: a plan whose proof is looser than CI is a plan that ships a leak CI would have caught. Both need `--exclude-dir=.venv`, or they match Django's own `site-packages` and print `LEAK` against the framework rather than against this repo.
 
 `docs/go-live-gates.md` must exist and name: **G1** flip consent screen to Internal (CEO, blocked on a Workspace domain), **G2** flip signup to invite-only before any real user (engineering runs, CEO verifies), **G3** add real team members as test users, **G4** confirm `OPSHUB_TOKEN_KEY` is in the platform secret manager, **G5** run the full suite against Internal settings. G2 is the one most likely to be skipped, because nothing about it is visible until an unknown address is sitting in the audit log.
 

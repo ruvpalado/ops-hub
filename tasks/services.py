@@ -26,8 +26,10 @@ that very first time, and the task would be stolen.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
+from django.core.paginator import Page, Paginator
 from django.db.models import Q
 from django.db.models.expressions import RawSQL
 from django.utils import timezone
@@ -37,9 +39,47 @@ from audit.writer import record
 from core.permissions import require_role
 from tasks.models import Task
 
+# Fifty rows is a cap rather than a preference: the board is the one list in
+# this app that grows without bound as the team works, and a list whose length
+# is the length of the table is a page that eventually times out.
+BOARD_PAGE_SIZE = 50
+DUE_SOON_LIMIT = 10
+SCOPE_MINE = "mine"
+SCOPE_TEAM = "team"
+OPEN_STATUSES = (Task.Status.TODO, Task.Status.IN_PROGRESS)
+
+# The columns a board page is allowed to read, named rather than defaulted.
+# `select_related("assignee")` on its own is `SELECT task.*, app_user.*`, which
+# drags a colleague's encrypted token columns into the result set to print a
+# display name next to them. §7 row 2 says no path returns another user's token
+# columns, and a name is the only thing this page wanted, so the name is all
+# that is asked for.
+CARD_FIELDS = (
+    "id",
+    "title",
+    "status",
+    "priority",
+    "due_at",
+    "assignee_id",
+    "assignee__display_name",
+)
+DETAIL_FIELDS = CARD_FIELDS + (
+    "description",
+    "completed_at",
+    "created_at",
+    "updated_at",
+    "created_by_id",
+    "assignee__email",
+    "created_by__display_name",
+)
+
 
 class NotAllowed(Exception):
     """The actor may not touch that task. Row 403 at the view layer."""
+
+
+class NotFound(Exception):
+    """There is no such task. Row 404 at the view layer."""
 
 
 def _audit_value(value):
@@ -181,3 +221,184 @@ def delete_tasks(actor: AppUser | None, task_ids: list[int]) -> int:
         delete_task(actor, task_id)
         deleted += 1
     return deleted
+
+
+def create_task(
+    actor: AppUser | None,
+    *,
+    title: str,
+    status: str,
+    priority: str,
+    description: str = "",
+    due_at=None,
+    assignee_id: int | None = None,
+) -> Task:
+    """File a new task with `actor` as its creator, whatever the request said.
+
+    Row 7 makes the creator the actor's own id, and row 8a's rule is applied
+    to the row being born: a member may file a task for themselves or leave it
+    for anyone to claim, and naming a third party is the same act as claiming
+    one and handing it straight on, so it takes an admin exactly as it does on
+    an update. Nothing about a fresh row needs the created_by override, because
+    there is no field a client could put it on.
+
+    The vocabularies and the lengths are deliberately not re-checked here. They
+    are CHECK constraints and varchar bounds in the table (tasks/models.py), so
+    no caller can store a value the database would refuse; the form in the view
+    layer is what turns a bad one into a message rather than an exception.
+    """
+    if actor is None:
+        raise NotAllowed("no actor")
+    if assignee_id is not None and assignee_id != actor.pk and not require_role(actor, AppUser.Role.ADMIN):
+        raise NotAllowed("a member may only create a task for themselves")
+
+    return Task.objects.create(
+        created_by=actor,
+        assignee_id=assignee_id,
+        title=title,
+        description=description or None,
+        priority=priority,
+        status=status,
+        due_at=due_at,
+    )
+
+
+# ------------------------------------------------------------------ board reads
+# Everything below is a read. None of it filters on who may look, because §7
+# row 6 says the board is the shared surface: a member sees every task and the
+# write-scoped half of the model is expressed by which controls the page
+# offers, not by which rows it renders.
+
+
+def board_page(
+    owner_id: int,
+    *,
+    page: int = 1,
+    scope: str = SCOPE_MINE,
+    status: str | None = None,
+) -> Page:
+    """The board, 50 rows to a page, with an out-of-range page clamped not refused.
+
+    `owner_id` rather than a whole user row, because the only thing the caller
+    contributes to the query is the id it is scoped to; passing a row would
+    widen the signature without widening the answer. The team scope filters on
+    nothing, which is row 6 saying out loud.
+
+    A page number past the end answers with the last real page. Somebody who
+    followed a stale bookmark or typed 9999 gets a board instead of a
+    traceback, and nothing is lost by it: the page numbers carry no state.
+    """
+    if scope not in (SCOPE_MINE, SCOPE_TEAM):
+        scope = SCOPE_MINE
+    if status not in Task.Status.values:
+        status = None
+
+    rows = Task.objects.all()
+    if scope == SCOPE_MINE:
+        rows = rows.filter(assignee_id=owner_id)
+    if status is not None:
+        rows = rows.filter(status=status)
+    # select_related so a page that prints the assignee's name is one query
+    # rather than one per row, and only() so that one query does not read the
+    # columns nobody here prints (CARD_FIELDS says which). It joins app_user,
+    # which is the other side of a many-to-one and adds no filter of its own,
+    # so the task indexes below are still the ones that serve this query.
+    rows = rows.select_related("assignee").only(*CARD_FIELDS)
+    # status then due_at is the order both indexes are shaped for: the composite
+    # (assignee_id, status) leads with this scope's filter, and (status, due_at)
+    # leads with the status filter. due_at ascending leaves undated work last,
+    # which is Postgres' own NULLS LAST rather than a decision made here.
+    paginator = Paginator(rows.order_by("status", "due_at", "pk"), BOARD_PAGE_SIZE)
+    return paginator.get_page(max(1, min(page, paginator.num_pages)))
+
+
+def due_soon(limit: int = DUE_SOON_LIMIT) -> list[Task]:
+    """The due-soon column: the team's open work with a date, nearest first.
+
+    Bounded on purpose — it is a column beside the list, and a column with no
+    limit is an unbounded query on every page render. Team-wide rather than
+    per-user for the same reason the list has a team scope: row 6.
+    """
+    return list(
+        Task.objects.filter(status__in=OPEN_STATUSES)
+        .exclude(due_at=None)
+        .select_related("assignee")
+        .only(*CARD_FIELDS)
+        .order_by("due_at", "pk")[:limit]
+    )
+
+
+def directory() -> list[AppUser]:
+    """The team, as far as the assignee picker is allowed to know it (row 3).
+
+    Name, email, role. The token columns are excluded in the query rather than
+    hidden by a template, so no later page change can surface one. No actor is
+    taken because row 3 grants the directory to every member and there is
+    nothing here for an actor to widen; a pre-created row with no google_sub is
+    an invitation rather than a user (§7) and is not on the board yet.
+    """
+    return list(
+        AppUser.objects.filter(google_sub__isnull=False, is_active=True)
+        .order_by("display_name")
+        .only("id", "display_name", "email", "role")
+    )
+
+
+def assignee_choices(actor: AppUser, task: Task | None = None) -> list[tuple[str, str]]:
+    """Who this actor may name on this task, as the picker's own options.
+
+    These are the rule `edit_task` enforces, read the same way round, so nobody
+    is offered a choice the write will refuse. An admin may name anyone (row 8);
+    the assignee may hand their own task to anyone (row 8a); anyone else looking
+    at an unclaimed task may take it or leave it unclaimed, which is the whole
+    of the carve-out and is why the unassigned option comes first.
+    """
+    if require_role(actor, AppUser.Role.ADMIN) or (task is not None and task.assignee_id == actor.pk):
+        people = directory()
+    else:
+        people = [actor]
+    return [("", "Unassigned")] + [(str(p.pk), f"{p.display_name} ({p.email})") for p in people]
+
+
+@dataclass(frozen=True)
+class TaskDetail:
+    """One task and the two permissions its page needs in order to render.
+
+    A small view-model rather than a flag the template guesses at, because the
+    flags are decisions. `editable` is row 8 answered by the same SQL predicate
+    that guards the write, so a page cannot offer an Edit control for a write
+    the service would refuse.
+    """
+
+    task: Task
+    editable: bool
+    deletable: bool
+
+
+def task_detail(actor: AppUser | None, task_id: int) -> TaskDetail:
+    """One task, with the controls its page is allowed to offer.
+
+    Row 6 is why this returns a colleague's task to a member rather than
+    hiding it: the board is read-shared, so the predicate is asked as a question
+    instead of being used as a filter. Filtering here would make a task the
+    actor is entitled to read disappear, and a member who can see a task on the
+    board must be able to open it.
+    """
+    task = (
+        Task.objects.select_related("assignee", "created_by")
+        .only(*DETAIL_FIELDS)
+        .filter(pk=task_id)
+        .first()
+    )
+    if task is None:
+        raise NotFound("no such task")
+
+    # An unresolved session is not a member, so it gets the read row 6 grants
+    # everyone and none of the controls — the same "no actor, no privilege"
+    # rule require_role already applies to the delete flag.
+    editable = actor is not None and Task.objects.filter(editable_by(actor), pk=task_id).exists()
+    return TaskDetail(
+        task=task,
+        editable=editable,
+        deletable=require_role(actor, AppUser.Role.ADMIN),
+    )

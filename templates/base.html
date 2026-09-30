@@ -1,0 +1,27 @@
+{% comment %}
+The shell every server-rendered page in this app sits in. It exists because
+step 16 is the first step to render more than one page, and four pages each
+carrying their own <head> is how they drift apart. The chrome is deliberately
+thin: the pages that own the content own it, and the dashboard step adds
+whatever the app grows into.
+{% endcomment %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Ops Hub{% endblock %}</title>
+</head>
+<body>
+  <header>
+    <a href="{% url 'task_board' %}"><strong>Ops Hub</strong></a>
+    <nav>
+      <a href="{% url 'task_board' %}">Board</a>
+      <a href="{% url 'task_create' %}">New task</a>
+      <a href="{% url 'team_directory' %}">Team</a>
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ heading }} — Ops Hub{% endblock %}
+
+{% comment %}
+One template for create and edit, because the fields are the same and the only
+difference is the heading, the initial data and the service the view calls.
+`form.as_p` is the rendering: Django escapes every value in it, so a title
+containing markup is shown as the text it is, and no field here needs to be
+marked safe.
+{% endcomment %}
+
+{% block content %}
+<h1>{{ heading }}</h1>
+
+<form method="post">
+  {% csrf_token %}
+  {{ form.as_p }}
+  <button type="submit">{{ submit_label }}</button>
+</form>
+
+<p><a href="{% url 'task_board' %}">Back to the board</a></p>
+{% endblock %}
