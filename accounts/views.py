@@ -17,10 +17,10 @@ from accounts import crypto
 from accounts.services import google_oauth, signin
 from accounts.services import tokens as token_store
 from audit import writer as audit
+from core.permissions import SESSION_USER_KEY  # re-exported: this module writes it, the decorators read it
 
 logger = logging.getLogger(__name__)
 
-SESSION_USER_KEY = "app_user_id"
 # Marks a callback as the second leg of /reconnect rather than a fresh sign-in.
 # It lives in the session for the same reason the state and verifier do: it is
 # part of one round trip and is consumed by the leg that closes it.
