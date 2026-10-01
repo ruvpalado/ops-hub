@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}500 — Server error{% endblock %}
+{% block content %}
+  <h1>500 — Server error</h1>
+  <p>Something went wrong on our end. The team has been notified.</p>
+  <p><a href="{% url 'task_board' %}">Try the board again</a></p>
+{% endblock %}

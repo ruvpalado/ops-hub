@@ -619,3 +619,39 @@ def test_seed_demo_refuses_to_run_outside_development(db):
         with pytest.raises(CommandError, match="refuses to run"):
             call_command("seed_demo", stdout=StringIO())
     assert AppUser.objects.count() == 0
+
+
+# --------------------------------------------------------------------------
+# Step 24 — smoke test
+# --------------------------------------------------------------------------
+
+
+def test_smoke_app_boots_and_board_renders(db, client):
+    """The app boots, /healthz is 200, and one board page renders with a seeded user.
+
+    This is the single end-to-end proof that the pages wire together. It runs
+    against the test database with the seed command, so it also validates that
+    the seed produces data the views can actually render.
+    """
+    with override_settings(OPSHUB_ENV="development"):
+        call_command("seed_demo", stdout=StringIO())
+
+    # /healthz is a liveness probe: no DB touch, must be 200
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.content == b"ok"
+
+    # Sign in as the seeded admin user
+    ada = AppUser.objects.get(email="ada@example.test")
+    session = client.session
+    session["app_user_id"] = ada.pk
+    session.save()
+
+    # The mail inbox renders with content and the reconnect banner
+    response = client.get("/mail/inbox")
+    assert response.status_code == 200
+    assert b"Q4 budget review" in response.content
+    # The inbox includes the reconnect banner because sources are disconnected
+    assert b"reconnect-banner" in response.content.lower()
+    # And the stale-data label on threads
+    assert b"stale-label" in response.content.lower()

@@ -178,6 +178,11 @@ BANNER_EXPIRING_MESSAGE = (
 STOPPED_STATUSES = (Source.Status.NEEDS_REAUTH, Source.Status.ERROR)
 
 
+BANNER_NOT_CONNECTED_MESSAGE = (
+    "Your Google connection is not set up. Connect to start syncing."
+)
+
+
 def banner_for(user, *, now=None) -> dict | None:
     """What this user needs to be told, or None when they need nothing.
 
@@ -185,12 +190,38 @@ def banner_for(user, *, now=None) -> dict | None:
     the proactive message, and a stopped user gets the cause they can act on.
     Returns {"kind", "message", "show_action"} for templates/partials/
     reconnect_banner.html, which is the only thing that renders it.
+
+    Spec §4.5 line 379: "Every page load for a user with `disconnected_at IS NOT
+    NULL` shows a persistent, non-dismissible banner". This function implements
+    that by checking `disconnected_at` first, before source status.
     """
     now = now or timezone.now()
+
+    # If the user has any source that was disconnected (disconnected_at set),
+    # they must see a banner. This covers both the seeded demo and real users
+    # whose grants expired and were marked disconnected.
+    has_disconnected = Source.objects.filter(
+        user=user, disconnected_at__isnull=False
+    ).exists()
+    if has_disconnected:
+        statuses = set(
+            Source.objects.filter(user=user)
+            .exclude(status=Source.Status.DISCONNECTED)
+            .values_list("status", flat=True)
+        )
+        if statuses & set(STOPPED_STATUSES):
+            cause = classify_grant_loss(user, now=now)
+            return {
+                "kind": cause,
+                "message": BANNER_EXPIRY_MESSAGE if cause == "expiry" else BANNER_REVOCATION_MESSAGE,
+                "show_action": True,
+            }
+        # No stopped statuses — the user is simply not connected (seeded demo,
+        # or a user who disconnected and never reconnected).
+        return {"kind": "not_connected", "message": BANNER_NOT_CONNECTED_MESSAGE, "show_action": True}
+
     statuses = set(
-        Source.objects.filter(user=user)
-        .exclude(status=Source.Status.DISCONNECTED)
-        .values_list("status", flat=True)
+        Source.objects.filter(user=user).values_list("status", flat=True)
     )
     if not statuses:
         return None

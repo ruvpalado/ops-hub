@@ -12,17 +12,13 @@ number that happens to fit in 50 rows.
 {% block content %}
 <h1>Inbox</h1>
 
+{% if banner %}
+  {% include "partials/reconnect_banner.html" with banner=banner %}
+{% endif %}
+
 {% if notice %}<p role="status">{{ notice }}</p>{% endif %}
 
 <p>{{ unread }} unread message{{ unread|pluralize }}.</p>
-
-{% if source.status != 'active' %}
-  <p role="status">
-    This mailbox is {{ source.get_status_display }}.
-    {% if source.last_error_code %}({{ source.last_error_code }}){% endif %}
-    <a href="{% url 'auth_reconnect' %}">Reconnect</a>
-  </p>
-{% endif %}
 
 <ul>
   {% for thread in threads %}
@@ -34,6 +30,9 @@ number that happens to fit in 50 rows.
       — {{ thread.last_activity|date:"Y-m-d H:i" }} UTC
       {% if thread.unread_count %}<span>{{ thread.unread_count }} unread</span>{% endif %}
       {% if thread.is_priority %}<span>priority</span>{% endif %}
+      {% if source.status != "active" and thread.last_activity %}
+        {% include "partials/stale_data_label.html" with source=source last_synced=thread.last_activity %}
+      {% endif %}
       <p>{{ thread.snippet }}</p>
     </li>
   {% empty %}

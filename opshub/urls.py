@@ -1,6 +1,8 @@
 from django.urls import path
 
 from accounts import views as auth_views
+from audit import views as audit_views
+from calendar_app import views as calendar_views
 from mail import views as mail_views
 from opshub import views
 from tasks import views as task_views
@@ -17,6 +19,10 @@ urlpatterns = [
     path("mail/inbox", mail_views.inbox, name="mail_inbox"),
     path("mail/thread/<str:thread_id>", mail_views.thread, name="mail_thread"),
     path("mail/thread/<str:thread_id>/reply", mail_views.reply, name="mail_reply"),
+    # calendar
+    path("calendar/", calendar_views.calendar, name="calendar"),
+    # audit (admin only)
+    path("audit/", audit_views.audit_list, name="audit_list"),
     # "new" is a literal segment ahead of the int converter, so a task can
     # never be created at an id-shaped address and a request for a task named
     # "new" is not a task request.

@@ -11,11 +11,19 @@ reached for it would undo that with one line.
 {% block content %}
 <h1>{{ messages.0.subject|default:"(no subject)" }}</h1>
 
+{% if banner %}
+  {% include "partials/reconnect_banner.html" with banner=banner %}
+{% endif %}
+
+{% if source.status != "active" and messages.0.message.received_at %}
+  {% include "partials/stale_data_label.html" with source=source last_synced=messages.0.message.received_at %}
+{% endif %}
+
 {% for row in messages %}
   <article data-message-id="{{ row.message.google_message_id }}">
     <header>
       <strong>{{ row.message.from_name|default:row.message.from_email }}</strong>
-      &lt;{{ row.message.from_email }}&gt;
+      <{{ row.message.from_email }}>
       — {{ row.message.received_at|date:"Y-m-d H:i" }} UTC
       {% if row.message.has_attachment %}<span>attachment</span>{% endif %}
       {% if row.message.direction == 'outbound' %}<span>sent by you</span>{% endif %}

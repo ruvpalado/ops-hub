@@ -26,6 +26,7 @@ from django.urls import reverse
 from django.views.decorators.http import require_http_methods
 
 from accounts.services import refresh
+from accounts.services.refresh import banner_for
 from accounts.services.tokens import read_access_token
 from core.permissions import login_required
 from mail.normalize import feed_threads, readable_body, thread_messages
@@ -80,6 +81,7 @@ def inbox(request):
             "threads": feed_threads(request.actor, limit=FEED_LIMIT),
             "unread": unread_count(request.actor),
             "notice": _banner(request, source),
+            "banner": banner_for(request.actor),
         },
     )
 
@@ -100,7 +102,7 @@ def thread(request, thread_id: str):
     return render(
         request,
         "mail/thread.html",
-        {"messages": _with_bodies(messages), "thread_id": thread_id},
+        {"messages": _with_bodies(messages), "thread_id": thread_id, "banner": banner_for(request.actor)},
     )
 
 

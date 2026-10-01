@@ -1,0 +1,8 @@
+{# A small label showing the age of stale data. Used in mail and calendar feeds.
+   `source` is the Source row, `last_synced` is the timestamp to show.
+   Renders nothing if source is active (connected). #}
+{% if source.status != "active" and last_synced %}
+  <span class="stale-label">
+    Stale — last synced {{ last_synced|date:"M d, H:i" }}
+  </span>
+{% endif %}

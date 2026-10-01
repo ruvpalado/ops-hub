@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Audit trail{% endblock %}
+{% block content %}
+  <h1>Audit trail</h1>
+
+  {% if page_obj %}
+    <table class="audit-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Actor</th>
+          <th>Action</th>
+          <th>Target</th>
+          <th>Metadata</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in page_obj %}
+          <tr>
+            <td>{{ entry.created_at|date:"M d, H:i:s" }}</td>
+            <td>
+              {% if entry.actor %}
+                {{ entry.actor.display_name }} ({{ entry.actor.email }})
+              {% else %}
+                <em>system</em>
+              {% endif %}
+            </td>
+            <td>{{ entry.action }}</td>
+            <td>{{ entry.target_type }}:{{ entry.target_id }}</td>
+            <td><pre>{{ entry.metadata|pprint }}</pre></td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="5">No audit entries yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if page_obj.has_other_pages %}
+      <nav class="pagination">
+        {% if page_obj.has_previous %}
+          <a href="?page={{ page_obj.previous_page_number }}">← Previous</a>
+        {% endif %}
+        <span>Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+        {% if page_obj.has_next %}
+          <a href="?page={{ page_obj.next_page_number }}">Next →</a>
+        {% endif %}
+      </nav>
+    {% endif %}
+  {% else %}
+    <p>No audit entries yet.</p>
+  {% endif %}
+{% endblock %}

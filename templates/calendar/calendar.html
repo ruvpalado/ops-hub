@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Calendar{% endblock %}
+{% block content %}
+  <h1>Calendar</h1>
+
+  {% if banner %}
+    {% include "partials/reconnect_banner.html" with banner=banner %}
+  {% endif %}
+
+  {% if notice %}
+    <div class="notice">{{ notice }}</div>
+  {% endif %}
+
+  {% if not events %}
+    <p>No events this fortnight.
+    {% if source.status != "active" %}
+      <a href="{% url 'auth_reconnect' %}">Connect Calendar</a> to start syncing.
+    {% else %}
+      Sync runs every few minutes.
+    {% endif %}</p>
+  {% else %}
+    <ul class="event-list">
+      {% for event in events %}
+        <li class="event {% if event.is_all_day %}all-day{% endif %} {% if not event.is_busy %}free{% endif %}">
+          <span class="event-time">
+            {% if event.is_all_day %}
+              All day
+            {% else %}
+              {{ event.start_at|date:"M d, H:i" }} — {{ event.end_at|date:"H:i" }}
+            {% endif %}
+          </span>
+          <span class="event-title">{{ event.title }}</span>
+          {% if event.location %}<span class="event-location">📍 {{ event.location }}</span>{% endif %}
+          {% if event.description %}<span class="event-description">{{ event.description }}</span>{% endif %}
+          {% if source.status != "active" and event.last_synced_at %}
+            {% include "partials/stale_data_label.html" with source=source last_synced=event.last_synced_at %}
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+{% endblock %}
