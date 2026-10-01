@@ -475,15 +475,22 @@ def test_scheduler_query_skips_non_active_sources_so_a_disconnected_user_costs_z
 
 
 def test_sync_calendar_command_skips_a_disconnected_users_source(db):
+    """The selection invariant, asserted through the command's dry run.
+
+    Written against --dry-run rather than a real sync so the assertion is about
+    *which rows the command picks up*, not about what happens after: a
+    disconnected user must cost zero API calls, which is only provable if the
+    work list itself excludes the row.
+    """
     live = _aged_user(db, days=1, email="cal@example.com", sub="sub-cal")
     gone = _aged_user(db, days=1, email="calgone@example.com", sub="sub-calgone")
     Source.objects.filter(user=gone).update(status=Source.Status.DISCONNECTED)
 
     out = io.StringIO()
-    call_command("sync_calendar", kind="calendar", stdout=out)
+    call_command("sync_calendar", "--dry-run", stdout=out)
     text = out.getvalue()
 
-    assert "due calendar sources: 1" in text
+    assert "would sync 1 calendar sources" in text
     assert f"user={live.pk}" in text
     assert f"user={gone.pk}" not in text
 

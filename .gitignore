@@ -16,3 +16,6 @@ staticfiles/
 
 # local postgres cluster (dev only, never committed)
 pgdata/
+
+# superpowers plan scratch (ledger, briefs, review packages)
+.superpowers/
