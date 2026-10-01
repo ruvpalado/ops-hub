@@ -33,7 +33,7 @@ from django.test.utils import CaptureQueriesContext
 
 from accounts.models import AppUser
 from core.models import Source
-from mail import normalize
+from mail import google_sync, normalize
 from mail.models import Message
 
 UTC = datetime.timezone.utc
@@ -407,3 +407,209 @@ def test_subject_reuse_keeps_the_re_prefix_verbatim(mailbox):
     feed = normalize.feed_threads(user)
 
     assert feed[0].subject.startswith("Re: ")
+
+# ------------------------------------------------ §6.2: sync mechanics
+
+
+class FakeGmail:
+    """A Gmail client with no HTTP in it.
+
+    The same parameter-not-global seam as the calendar suite. `fail_with` names a
+    method and the next call to it raises, which is how a 429 or a 410 gets
+    injected at a chosen point in the sequence rather than mocked globally.
+    """
+
+    def __init__(self, *, history_pages=None, history_id="h2", messages=None, threads=None):
+        self.history_pages = history_pages or [{"history": []}]
+        self.history_id = history_id
+        self.messages = messages or {}
+        self.threads = threads or {"threads": []}
+        self.calls = []
+        self.fail_with = None
+
+    def _guard(self, method):
+        self.calls.append(method)
+        if self.fail_with == method:
+            raise self.fail_with_error
+
+    def history(self, *, start_history_id=None, page_token=None):
+        self._guard("history")
+        page = 0 if page_token is None else int(page_token)
+        response = self.history_pages[page]
+        if page + 1 < len(self.history_pages):
+            response = {**response, "nextPageToken": str(page + 1)}
+        return response
+
+    def profile(self):
+        self._guard("profile")
+        return {"historyId": self.history_id}
+
+    def messages_list(self, *, query, max_results):
+        self._guard("messages_list")
+        self.list_args = (query, max_results)
+        return self.threads
+
+    def get_thread(self, thread_id):
+        self._guard("get_thread")
+        return {"messages": [{"id": mid} for mid in self.threads.get(thread_id, [])]}
+
+    def get_message(self, message_id, *, metadata_only=False):
+        self._guard("get_message")
+        self.last_metadata_only = metadata_only
+        return self.messages[message_id]
+
+
+def test_a_history_walk_collects_added_and_relabelled_messages(mailbox):
+    """messagesLabelsAdded is how an UNREAD flip arrives. Reading only
+    messagesAdded would make §6.2's writer 1 dead code with every test green."""
+    user, source = mailbox
+    source.cursor = "h1"
+    source.save(update_fields=["cursor"])
+    service = FakeGmail(
+        history_pages=[
+            {"history": [{"messagesAdded": [{"id": "m1"}]}]},
+            {"history": [{"messagesLabelsAdded": [{"id": "m2"}]}]},
+        ],
+        messages={"m1": _gmail_message("m1"), "m2": _gmail_message("m2", unread=True)},
+    )
+
+    assert google_sync.sync_gmail(source, service) is google_sync.SyncOutcome.SYNCED
+    assert Message.objects.count() == 2
+    assert source.cursor == "h2"
+
+
+def test_the_cursor_moves_only_after_the_rows_commit(mailbox):
+    """A sync that dies mid-way must leave the cursor where it was, so the next
+    tick re-reads the same history instead of skipping what was never stored."""
+    user, source = mailbox
+    source.cursor = "h1"
+    source.save(update_fields=["cursor"])
+    service = FakeGmail(
+        history_pages=[{"history": [{"messagesAdded": [{"id": "m1"}]}]}],
+        messages={"m1": _gmail_message("m1")},
+    )
+    service.fail_with = "get_message"
+    service.fail_with_error = RuntimeError("upstream 503")
+
+    assert google_sync.sync_gmail(source, service) is google_sync.SyncOutcome.FAILED
+    assert Message.objects.count() == 0
+    source.refresh_from_db()
+    assert source.cursor == "h1"
+
+
+def test_a_quota_rate_limit_defers_the_next_attempt_without_disconnecting(mailbox):
+    """§9.4: Retry-After honoured verbatim, next_attempt_at set, status still
+    active. The tempting wrong move is status='error', which would drop this
+    mailbox out of the scheduler for a condition that clears in seconds."""
+    user, source = mailbox
+    source.cursor = "h1"
+    source.save(update_fields=["cursor"])
+    service = FakeGmail(history_id="h2")
+    service.fail_with = "history"
+    service.fail_with_error = google_sync.RateLimited(120)
+    now = _at(22)
+
+    outcome = google_sync.sync_gmail(source, service, now=now)
+
+    source.refresh_from_db()
+    assert outcome is google_sync.SyncOutcome.RATE_LIMITED
+    assert source.next_attempt_at == now + datetime.timedelta(seconds=120)
+    assert source.status == Source.Status.ACTIVE
+    assert source.last_error_code == "rate_limited"
+
+
+def test_an_expired_history_is_cleared_so_the_next_tick_reseeds(mailbox):
+    """§9.4's 410 row: cursor nulled, 30-day re-seed next tick, once."""
+    user, source = mailbox
+    source.cursor = "h1"
+    source.save(update_fields=["cursor"])
+    service = FakeGmail()
+    service.fail_with = "history"
+    service.fail_with_error = google_sync.HistoryExpired()
+
+    outcome = google_sync.sync_gmail(source, service)
+
+    source.refresh_from_db()
+    assert outcome is google_sync.SyncOutcome.HISTORY_EXPIRED
+    assert source.cursor is None
+
+
+def test_a_cold_start_is_bounded_to_thirty_days_and_two_hundred_threads(mailbox):
+    """§6.2's seed. Unbounded, a decade-old mailbox would spend an hour and blow
+    a daily quota on one person's first login."""
+    user, source = mailbox
+    assert source.cursor is None
+    service = FakeGmail(
+        threads={"threads": [{"id": "t1"}, {"id": "t2"}], "t1": ["m1"], "t2": ["m2", "m3"]},
+        messages={"m1": _gmail_message("m1"), "m2": _gmail_message("m2"),
+                  "m3": _gmail_message("m3")},
+    )
+
+    assert google_sync.sync_gmail(source, service) is google_sync.SyncOutcome.SYNCED
+    assert Message.objects.count() == 3
+    assert service.list_args == ("in:anywhere newer_than:30d", 200)
+    source.refresh_from_db()
+    assert source.cursor == "h2"
+
+
+def test_a_stored_message_costs_no_body_fetch_on_the_next_quota_tick(mailbox):
+    """The quota mechanism for Risk 7: an idle mailbox costs a history page per
+    tick, not a full body fetch per message."""
+    user, source = mailbox
+    source.cursor = "h1"
+    source.save(update_fields=["cursor"])
+    _store(user, source, _gmail_message("m1"), is_read=True)
+    service = FakeGmail(
+        history_pages=[{"history": [{"messagesAdded": [{"id": "m1"}]}]}],
+        messages={"m1": _gmail_message("m1", unread=True)},
+    )
+
+    google_sync.sync_gmail(source, service)
+
+    assert service.last_metadata_only is True
+    assert Message.objects.get(google_message_id="m1").is_read is False
+
+
+def test_changes_over_a_hundred_messages_arrive_in_one_batch(mailbox):
+    """§6.2's batch size is 100, and Gmail caps messages.get at 100 per request.
+    The assertion is that 250 changes become 3 batches, not one rejected call."""
+    user, source = mailbox
+    source.cursor = "h1"
+    source.save(update_fields=["cursor"])
+    ids = [f"m{n}" for n in range(250)]
+    service = FakeGmail(
+        history_pages=[{"history": [{"messagesAdded": [{"id": i} for i in ids]}]}],
+        messages={i: _gmail_message(i) for i in ids},
+    )
+
+    google_sync.sync_gmail(source, service)
+
+    assert Message.objects.count() == 250
+    # 250 ids cannot go in one request; the boundary is what Gmail enforces
+    assert [len(b) for b in google_sync._batched(ids)] == [100, 100, 50]
+
+
+def test_the_unread_label_id_costs_two_quota_calls_for_the_whole_run(mailbox):
+    """§6.2's label refresh, cached client-side. Fetched per message it would be
+    250 extra units on a busy day for one constant string."""
+    user, source = mailbox
+    source.cursor = "h1"
+    source.save(update_fields=["cursor"])
+    ids = [f"m{n}" for n in range(5)]
+    service = FakeGmail(
+        history_pages=[{"history": [{"messagesAdded": [{"id": i} for i in ids]}]}],
+        messages={i: _gmail_message(i, unread=n % 2 == 0) for n, i in enumerate(ids)},
+    )
+    calls = []
+
+    def counted():
+        calls.append(1)
+        return "UNREAD"
+
+    service.labels_unread_id = counted
+    google_sync.sync_gmail(source, service)
+
+    # one call for five messages, and the label id it returned is what decided
+    # is_read on all five
+    assert len(calls) == 1
+    assert Message.objects.filter(is_read=False).count() == 3
