@@ -7,15 +7,12 @@ holds it.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
-
-from django.http import Http404, HttpResponse
+from django.http import Http404
 from django.shortcuts import render
-from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from accounts.services.refresh import banner_for
-from calendar_app.models import CalendarEvent
+from calendar_app.services import fortnight_events, source_for, today_and_fortnight
 from core.models import Source
 from core.permissions import login_required
 
@@ -30,21 +27,12 @@ def calendar(request):
     to be able to see, and hiding it behind a 404 would leave them with no route
     to fix it.
     """
-    source = Source.objects.filter(user=request.actor, kind=Source.Kind.CALENDAR).first()
+    source = source_for(request.actor, Source.Kind.CALENDAR)
     if source is None:
         raise Http404("no such calendar") from None
 
-    # The fortnight is the same window the availability engine uses: today plus
-    # 13 days = 14 days total, matching the seed and the sync command's window.
-    today = timezone.now().date()
-    start = today
-    end = today + timedelta(days=13)
-
-    events = (
-        CalendarEvent.objects.filter(owner=request.actor, start_at__date__gte=start, start_at__date__lte=end)
-        .order_by("start_at")
-        .select_related("owner")
-    )
+    today, end = today_and_fortnight()
+    events = fortnight_events(request.actor, today, end)
 
     return render(
         request,
