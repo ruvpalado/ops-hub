@@ -512,7 +512,8 @@ Worked example, so there is no ambiguity at implementation time:
 - Merged: `13:00–14:00`, `15:00–16:30`, `17:00–18:00`. Note `14:00Z` and `15:00Z` do **not** merge — there is a genuine 60-minute gap at `14:00–15:00Z` (10:00–11:00 ET).
 - Free gaps after subtraction: `[14:00, 15:00)` = 60 min exactly → valid. `[16:30, 17:00)` = 30 min → too short. `[18:00, 21:00)` = 180 min → valid.
 - 15-minute grid aligned to local clock: `14:00Z` = 10:00 ET, already on grid. Candidates from that gap: `14:00Z` (10:00 ET). Candidates from `[18:00, 21:00)`: `18:00Z` (14:00 ET), `19:00Z` (15:00 ET), `20:00Z` (16:00 ET) — `20:00Z` + 60 min = `21:00Z`, exactly the window end, so it is emitted; the grid point `21:00Z` would produce a zero-length tail and is dropped.
-- Result: `[14:00Z, 18:00Z, 19:00Z, 20:00Z]` → 4 candidates, 10:00 ET, 2:00 pm, 3:00 pm, 4:00 pm.
+- Result: `[14:00Z, 18:00Z, 19:00Z, 20:00Z]` → 4 candidates on Monday, 10:00 ET, 2:00 pm, 3:00 pm, 4:00 pm.
+- The window runs to Wednesday, so the walk continues. Tuesday 2026-09-29 has no busy blocks at all, so its first gap is the whole business day and `09:00 ET` = `13:00Z` is a candidate. That is the fifth candidate, and the cap of 5 stops there. **The earlier draft of this line said "4 candidates" and stopped at Monday; that contradicted the stated cap and the day-by-day walk, since a five-candidate result was available. The rule is authoritative: emit at most 5, ordered by start time ascending.**
 
 ---
 
