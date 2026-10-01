@@ -28,9 +28,12 @@ wears the same decorator, and tests/test_task_board.py proves it end to end.
 """
 
 from dataclasses import dataclass
+from io import StringIO
 
 import pytest
 from django.contrib.sessions.middleware import SessionMiddleware
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import DataError, IntegrityError, connection, transaction
 from django.http import HttpRequest, HttpResponse
 from django.test import override_settings
@@ -39,6 +42,17 @@ from django.urls import path
 
 from accounts.models import AppUser
 from accounts.views import google_start
+from calendar_app.models import CalendarEvent
+from core.management.commands.seed_demo import (
+    EXPECTED_DAYS,
+    EXPECTED_EVENTS,
+    EXPECTED_MESSAGES,
+    EXPECTED_TASKS,
+    EXPECTED_THREADS,
+    EXPECTED_UNASSIGNED,
+    EXPECTED_USERS,
+)
+from core.models import Source
 from core.permissions import (
     SESSION_USER_KEY,
     admin_required,
@@ -46,6 +60,7 @@ from core.permissions import (
     require_member,
     require_role,
 )
+from mail.models import Message
 from tasks.models import Task
 from tasks.services import NotAllowed, delete_task, delete_tasks, edit_task, editable_by
 
@@ -544,3 +559,63 @@ def test_task_constraint_refuses_a_description_past_its_bound(db):
 
     with pytest.raises(DataError), transaction.atomic():
         Task.objects.create(created_by=owner, title="long one", description="x" * 20_001)
+
+
+# --------------------------------------------------------------------------
+# Step 23, seed_demo
+# --------------------------------------------------------------------------
+
+
+def test_seed_demo_writes_the_shape_a_reviewer_needs(db):
+    """The counts, and the three task shapes that make §7 rows 8/8a/9 clickable.
+
+    Idempotence is part of the assertion, not a separate test: the second run is
+    the only thing that proves the rows are written through a natural key rather
+    than appended, and a seed that doubles up is worse than no seed.
+    """
+    with override_settings(OPSHUB_ENV="development"):
+        call_command("seed_demo", stdout=StringIO())
+        # The five counts the plan states, and the day span that makes the
+        # fortnight claim true.
+        assert AppUser.objects.count() == EXPECTED_USERS
+        assert Task.objects.count() == EXPECTED_TASKS
+        assert CalendarEvent.objects.count() == EXPECTED_EVENTS
+        assert Message.objects.filter(direction=Message.Direction.INBOUND).count() + \
+            Message.objects.filter(direction=Message.Direction.OUTBOUND).count() == EXPECTED_MESSAGES
+        assert Message.objects.values("thread_id").distinct().count() == EXPECTED_THREADS
+        assert (
+            CalendarEvent.objects.values("start_at__date").distinct().count()
+            == EXPECTED_DAYS
+        )
+
+        # Row 8a: a claimable pool. Row 8: tasks on other people, so the 403 path
+        # has a target. Both are zero rows in a demo that only proves one path.
+        assert Task.objects.filter(assignee__isnull=True).count() == EXPECTED_UNASSIGNED
+        assert Task.objects.exclude(assignee=None).exclude(assignee__google_sub="demo-sub-0").exists()
+
+        # Zero active sources. This is the load-bearing one: a seeded source with
+        # no token is not connected, so the scheduler skips it exactly as it skips
+        # a real user whose grant expired, and the board shows the same reconnect
+        # banner a real stale mailbox shows.
+        assert not Source.objects.filter(status=Source.Status.ACTIVE).exists()
+        assert Source.objects.filter(
+            status=Source.Status.DISCONNECTED, last_error_code="no_token"
+        ).count() == EXPECTED_USERS * 2
+
+        # Idempotent: a second run changes nothing.
+        call_command("seed_demo", stdout=StringIO())
+        assert Task.objects.count() == EXPECTED_TASKS
+        assert CalendarEvent.objects.count() == EXPECTED_EVENTS
+        assert Message.objects.count() == EXPECTED_MESSAGES
+
+
+def test_seed_demo_refuses_to_run_outside_development(db):
+    """A development fixture that can be aimed at production is not a fixture.
+
+    The command is checked before it touches the database, so a refusal also
+    proves nothing was written.
+    """
+    with override_settings(OPSHUB_ENV="production"):
+        with pytest.raises(CommandError, match="refuses to run"):
+            call_command("seed_demo", stdout=StringIO())
+    assert AppUser.objects.count() == 0
