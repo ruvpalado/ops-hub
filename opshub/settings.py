@@ -101,6 +101,7 @@ DEBUG = OPSHUB_ENV == "development"
 ALLOWED_HOSTS = [h for h in (env_str("OPSHUB_ALLOWED_HOSTS", "localhost,127.0.0.1,testserver") or "").split(",") if h]
 
 INSTALLED_APPS = [
+    "mail",
     "core",
     "accounts",
     "audit",
