@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ messages.0.subject|default:"Thread" }} — Ops Hub{% endblock %}
+
+{% comment %}
+One thread, oldest first, so it reads the way it happened. The body is
+`readable_body` — the stored plain text — and never `body_html`: §6.1 keeps the
+HTML column inert because it is a third-party XSS vector, and a template that
+reached for it would undo that with one line.
+{% endcomment %}
+
+{% block content %}
+<h1>{{ messages.0.subject|default:"(no subject)" }}</h1>
+
+{% for row in messages %}
+  <article data-message-id="{{ row.message.google_message_id }}">
+    <header>
+      <strong>{{ row.message.from_name|default:row.message.from_email }}</strong>
+      &lt;{{ row.message.from_email }}&gt;
+      — {{ row.message.received_at|date:"Y-m-d H:i" }} UTC
+      {% if row.message.has_attachment %}<span>attachment</span>{% endif %}
+      {% if row.message.direction == 'outbound' %}<span>sent by you</span>{% endif %}
+    </header>
+    {% if row.message.to_emails %}<p>To: {{ row.message.to_emails|join:", " }}</p>{% endif %}
+    <pre>{{ row.body }}</pre>
+  </article>
+{% endfor %}
+
+<p><a href="{% url 'mail_reply' thread_id %}">Reply</a></p>
+{% endblock %}

@@ -26,6 +26,8 @@ builder can be exercised without a real mailbox.
 
 import base64
 import datetime
+import io
+import urllib.error
 
 import pytest
 from django.db import connection
@@ -613,3 +615,135 @@ def test_the_unread_label_id_costs_two_quota_calls_for_the_whole_run(mailbox):
     # is_read on all five
     assert len(calls) == 1
     assert Message.objects.filter(is_read=False).count() == 3
+
+
+# ------------------------------------------------ the HTTP boundary
+
+
+def test_a_429_from_google_becomes_a_rate_limit_with_googles_own_number(mailbox):
+    """§6.2: the deferral is Google's Retry-After, not a local constant.
+
+    The fake in the rest of this file raises `RateLimited` directly, so nothing
+    else in the suite can catch the header being dropped between the socket and
+    the sync loop. This walks the real path: HTTPError -> OAuthError -> the
+    condition `sync_gmail` actually catches.
+    """
+    from unittest import mock
+
+    from accounts.services import google_oauth
+    from mail.management.commands import sync_gmail
+
+    error = urllib.error.HTTPError(
+        url="https://gmail.googleapis.com/x",
+        code=429,
+        msg="",
+        hdrs={"Retry-After": "900"},
+        fp=io.BytesIO(b""),
+    )
+    with mock.patch("urllib.request.urlopen", side_effect=error):
+        with pytest.raises(google_sync.RateLimited) as caught:
+            sync_gmail.build_service("tok").history(start_history_id="h1")
+
+    assert caught.value.retry_after_seconds == 900
+
+
+def test_a_410_from_google_becomes_an_expired_cursor(mailbox):
+    """The one status that nulls the cursor, and nothing else does.
+
+    A 403 on the same call has to stay an OAuthError: sweeping it into the
+    expired branch would silently restart a cold start on a permissions problem,
+    which looks like a working sync and costs the whole 30-day budget every tick.
+    """
+    from unittest import mock
+
+    from accounts.services import google_oauth
+    from mail.management.commands import sync_gmail
+
+    def http_error(status):
+        return urllib.error.HTTPError(
+            url="https://gmail.googleapis.com/x",
+            code=status,
+            msg="",
+            hdrs={},
+            fp=io.BytesIO(b""),
+        )
+
+    with mock.patch("urllib.request.urlopen", side_effect=http_error(410)):
+        with pytest.raises(google_sync.HistoryExpired):
+            sync_gmail.build_service("tok").history(start_history_id="h1")
+
+    with mock.patch("urllib.request.urlopen", side_effect=http_error(403)):
+        with pytest.raises(google_oauth.OAuthError):
+            sync_gmail.build_service("tok").history(start_history_id="h1")
+
+
+def test_the_history_request_asks_for_label_changes_as_well_as_additions():
+    """A label change arrives only in the labels list.
+
+    Filtering it out leaves §6.2's unread writer unreachable while every test on
+    the added list stays green — a silent feature death, so the request
+    parameters are asserted directly.
+    """
+    from unittest import mock
+
+    from mail.management.commands import sync_gmail
+
+    captured = {}
+
+    class _Resp:
+        headers = {}
+        status = 200
+
+        def read(self_inner):
+            return b'{"history": []}'
+
+        def __enter__(self_inner):
+            return self_inner
+
+        def __exit__(self_inner, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        captured["url"] = request.full_url
+        return _Resp()
+
+    with mock.patch("urllib.request.urlopen", fake_urlopen):
+        sync_gmail.build_service("tok").history(start_history_id="h1")
+
+    assert "historyTypes=messageAdded%2CmessageLabelsAdded" in captured["url"]
+
+
+def test_a_reply_is_base64_encoded_because_gmail_will_not_take_raw_mime():
+    """`messages.send` takes base64url of the RFC 5322 bytes, not the bytes."""
+    import base64 as _b64
+
+    from unittest import mock
+
+    from mail.management.commands import sync_gmail
+
+    captured = {}
+
+    class _Resp:
+        headers = {}
+        status = 200
+
+        def read(self_inner):
+            return b'{"id": "m9"}'
+
+        def __enter__(self_inner):
+            return self_inner
+
+        def __exit__(self_inner, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        captured["data"] = request.data
+        return _Resp()
+
+    with mock.patch("urllib.request.urlopen", fake_urlopen):
+        sent = sync_gmail.build_service("tok").send_raw(raw=b"To: a@b.test\r\n\r\nhi", thread_id="t1")
+
+    payload = __import__("json").loads(captured["data"])
+    assert _b64.urlsafe_b64decode(payload["raw"] + "==") == b"To: a@b.test\r\n\r\nhi"
+    assert payload["threadId"] == "t1"
+    assert sent["id"] == "m9"

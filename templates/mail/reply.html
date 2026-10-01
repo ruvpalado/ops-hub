@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Reply — Ops Hub{% endblock %}
+
+{% comment %}
+The hidden `idempotency_key` is the whole point of this form. It is minted on
+every GET, travels through the POST, and is checked against the database before
+`messages.send` runs — so a double-click, a resubmit, or a back-then-forward
+produces one email. `draft` survives a failed send because the alternative is
+the user retyping what they just wrote; §9.4's unknown-outcome copy is the
+distinction between "it failed" and "we do not know", because blind retrying the
+second is how the same person gets two emails.
+{% endcomment %}
+
+{% block content %}
+<h1>Reply</h1>
+
+{% if error %}<p role="alert">{{ error }}</p>{% endif %}
+
+{% for row in messages %}
+  <article>
+    <header><strong>{{ row.message.from_name|default:row.message.from_email }}</strong> — {{ row.message.received_at|date:"Y-m-d H:i" }} UTC</header>
+    <pre>{{ row.body }}</pre>
+  </article>
+{% endfor %}
+
+<form method="post" action="{% url 'mail_reply' thread_id %}">
+  {% csrf_token %}
+  <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+  <label for="id_body">Your reply</label>
+  <textarea id="id_body" name="body" rows="8" cols="72">{{ draft }}</textarea>
+  <button type="submit">Send reply</button>
+</form>
+
+<p><a href="{% url 'mail_thread' thread_id %}">Back to thread</a></p>
+{% endblock %}

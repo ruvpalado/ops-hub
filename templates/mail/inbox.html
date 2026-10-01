@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Inbox — Ops Hub{% endblock %}
+
+{% comment %}
+The inbox is a thread list, not a message list, because §6.1 has no thread
+table: `feed_threads` returns one row per thread already folded, so this template
+never groups anything. The unread badge is a separate COUNT rather than a sum of
+the list, so the number on screen is the number in the mailbox and not the
+number that happens to fit in 50 rows.
+{% endcomment %}
+
+{% block content %}
+<h1>Inbox</h1>
+
+{% if notice %}<p role="status">{{ notice }}</p>{% endif %}
+
+<p>{{ unread }} unread message{{ unread|pluralize }}.</p>
+
+{% if source.status != 'active' %}
+  <p role="status">
+    This mailbox is {{ source.get_status_display }}.
+    {% if source.last_error_code %}({{ source.last_error_code }}){% endif %}
+    <a href="{% url 'auth_reconnect' %}">Reconnect</a>
+  </p>
+{% endif %}
+
+<ul>
+  {% for thread in threads %}
+    <li data-thread-id="{{ thread.thread_id }}">
+      <a href="{% url 'mail_thread' thread.thread_id %}">
+        {% if thread.unread_count %}<strong>{% endif %}{{ thread.subject|default:"(no subject)" }}{% if thread.unread_count %}</strong>{% endif %}
+      </a>
+      — {{ thread.participants|join:", " }}
+      — {{ thread.last_activity|date:"Y-m-d H:i" }} UTC
+      {% if thread.unread_count %}<span>{{ thread.unread_count }} unread</span>{% endif %}
+      {% if thread.is_priority %}<span>priority</span>{% endif %}
+      <p>{{ thread.snippet }}</p>
+    </li>
+  {% empty %}
+    <li>No mail yet. <a href="{% url 'auth_reconnect' %}">Connect Gmail</a> to start syncing.</li>
+  {% endfor %}
+</ul>
+{% endblock %}

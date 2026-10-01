@@ -20,6 +20,7 @@ redaction and error-code translation wrong.
 
 from __future__ import annotations
 
+import base64
 import logging
 from urllib.parse import quote, urlencode
 
@@ -38,7 +39,7 @@ GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 
 def build_service(access_token: str | None):
-    """A Gmail client with the five methods google_sync calls.
+    """A Gmail client with the methods `mail.google_sync` and `mail.services` call.
 
     A missing token is a programming error at this point — the caller has
     already run the refresh — so it is refused rather than turned into an
@@ -52,16 +53,36 @@ def build_service(access_token: str | None):
     class _Gmail:
         @staticmethod
         def _call(path, *, method="GET", params=None, body=None):
+            """One Gmail call, with HTTP status translated into sync vocabulary.
+
+            The translation is here, at the boundary, rather than in
+            `mail.google_sync`: a 429 means the same thing whichever method hit
+            it, and `google_sync` should never have to know that Gmail speaks
+            HTTP. `google_sync` raises `RateLimited` and `HistoryExpired`; those
+            are this project's names for the conditions, and a caller that
+            catches `OAuthError` instead would have to know Google's.
+            """
             url = f"{GMAIL_BASE}{path}"
             if params:
                 url = f"{url}?{urlencode(params)}"
-            return google_oauth._http(method, url, data=body, access_token=access_token)
+            try:
+                return google_oauth._http(
+                    method, url, json_body=body, access_token=access_token
+                )
+            except google_oauth.OAuthError as exc:
+                raise _translated(exc) from exc
 
         def profile(self):
             return self._call("/profile")
 
         def history(self, *, start_history_id, page_token=None):
-            params = {"startHistoryId": start_history_id, "historyTypes": "messageAdded"}
+            # messageLabelsAdded is not optional. A label change arrives only in
+            # the *labels* list, so filtering it out makes §6.2's unread writer
+            # unreachable while every test on the added list still passes.
+            params = {
+                "startHistoryId": start_history_id,
+                "historyTypes": "messageAdded,messageLabelsAdded",
+            }
             if page_token:
                 params["pageToken"] = page_token
             return self._call("/history", params=params)
@@ -82,6 +103,22 @@ def build_service(access_token: str | None):
                 params={"format": fmt, "metadataHeaders": "Subject"},
             )
 
+        def send_raw(self, *, raw: bytes, thread_id: str) -> dict:
+            """POST a raw RFC 5322 message. §6.3, and the only write we hold.
+
+            gmail.send, not gmail.modify: §4.1 grants sending. The raw form is
+            what makes threading work — Gmail files the message by its
+            In-Reply-To/References headers, which a JSON body cannot express.
+            """
+            return self._call(
+                "/messages/send",
+                method="POST",
+                body={
+                    "raw": base64.urlsafe_b64encode(raw).decode("ascii"),
+                    "threadId": thread_id,
+                },
+            )
+
         def labels_unread_id(self):
             """The UNREAD label id, fetched at most once per sync run.
 
@@ -95,6 +132,22 @@ def build_service(access_token: str | None):
             return unread_label_id
 
     return _Gmail()
+
+
+def _translated(exc):
+    """An OAuthError as the condition `mail.google_sync` handles.
+
+    429 keeps Google's Retry-After verbatim so the deferral is Google's number
+    rather than a local guess. 410 is the history cursor falling out of Gmail's
+    retention window, which §9.4 answers with a cold start rather than an
+    error — and it is the *only* status that nulls the cursor, so a 404 or a 403
+    from the same call must not be swept into it.
+    """
+    if exc.code == "http_429":
+        return google_sync.RateLimited(exc.retry_after)
+    if exc.code == "http_410":
+        return google_sync.HistoryExpired()
+    return exc
 
 
 class Command(BaseCommand):
