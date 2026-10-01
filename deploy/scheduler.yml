@@ -1,0 +1,59 @@
+# Scheduler configuration for Kubernetes CronJob or similar external schedulers.
+# This file defines the schedule; the actual deployment manifest is outside this repo.
+#
+# The two sync commands are idempotent and self-limiting:
+# - sync_gmail --all: syncs all active Gmail sources, skips ones with next_attempt_at > now
+# - sync_calendar --all: same for Calendar
+# Both handle their own locking (FOR UPDATE SKIP LOCKED on Source rows) and
+# backoff (next_attempt_at with exponential backoff on failure).
+#
+# Schedule: every 5 minutes, staggered by 30 seconds to avoid thundering herd.
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ops-hub-sync-gmail
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sync
+              image: "${OPS_HUB_IMAGE}"
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  python manage.py sync_gmail --all
+              envFrom:
+                - secretRef:
+                    name: ops-hub-secrets
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ops-hub-sync-calendar
+spec:
+  schedule: "*/5 * * * *"
+  startingDeadlineSeconds: 60
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sync
+              image: "${OPS_HUB_IMAGE}"
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  sleep 30 && python manage.py sync_calendar --all
+              envFrom:
+                - secretRef:
+                    name: ops-hub-secrets
